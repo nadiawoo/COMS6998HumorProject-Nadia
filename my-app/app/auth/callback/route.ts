@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     .from("profiles")
     .select("first_name, last_name")
     .eq("id", user!.id)
-    .single();
+    .maybeSingle();
 
   const needsName = !profile?.first_name || !profile?.last_name;
   return NextResponse.redirect(`${origin}${needsName ? "/profile" : "/members"}`);

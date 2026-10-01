@@ -39,13 +39,14 @@ export async function updateProfile(formData: FormData) {
     const { error } = await supabase.storage
       .from("avatars")
       .upload(path, photo, { upsert: true, contentType: photo.type });
-    if (error) throw error;
+    if (error) throw new Error(`Photo upload failed: ${error.message}`);
     const { data } = supabase.storage.from("avatars").getPublicUrl(path);
     updates.profile_pic = `${data.publicUrl}?t=${Date.now()}`; // ?t= busts the browser cache
   }
 
-  const { error } = await supabase.from("profiles").update(updates).eq("id", user.id);
-  if (error) throw error;
+  // upsert = update your row, or create it if the trigger never made one
+  const { error } = await supabase.from("profiles").upsert({ id: user.id, ...updates });
+  if (error) throw new Error(`Saving profile failed: ${error.message}`);
 
   revalidatePath("/", "layout");
   redirect("/members");

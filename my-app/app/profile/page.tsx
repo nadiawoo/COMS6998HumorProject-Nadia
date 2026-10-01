@@ -5,7 +5,7 @@ import { updateProfile } from "../actions";
 export default async function Profile() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user!.id).single();
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user!.id).maybeSingle();
 
   const needsName = !profile?.first_name || !profile?.last_name;
 
