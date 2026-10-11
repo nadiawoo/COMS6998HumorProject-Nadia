@@ -20,5 +20,5 @@ export async function GET(request: NextRequest) {
     .maybeSingle();
 
   const needsName = !profile?.first_name || !profile?.last_name;
-  return NextResponse.redirect(`${origin}${needsName ? "/profile" : "/members"}`);
+  return NextResponse.redirect(`${origin}${needsName ? "/profile" : "/"}`);
 }
