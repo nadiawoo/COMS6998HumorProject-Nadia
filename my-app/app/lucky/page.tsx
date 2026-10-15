@@ -5,7 +5,7 @@ import { MOODS, themeOf } from "@/lib/themes";
 import { isDark, serviceDay, toNyInput } from "@/lib/time";
 import { luckyNew } from "../actions";
 import { RouteCard } from "@/components/RouteCard";
-import { PLAN_STEPS, SubmitButton } from "@/components/SubmitButton";
+import { SubmitButton } from "@/components/SubmitButton";
 import { ArrowIcon } from "@/components/Icons";
 
 export const maxDuration = 300; // "Make me a new one" calls Gemini, which can be slow
@@ -75,7 +75,7 @@ export default async function Lucky({ searchParams }: PageProps<"/lucky">) {
           <form action={luckyNew} className="space-y-2">
             <input type="hidden" name="mood" value={mood.id} />
             <input type="hidden" name="when" value={now ? "now" : "anytime"} />
-            <SubmitButton pending="Picking a place" steps={[{ at: 0, label: "Picking a place" }, ...PLAN_STEPS.slice(1)]} expected={45}>Make me a new one</SubmitButton>
+            <SubmitButton pending="Picking a place" steps={[{ at: 0, label: "Picking a place" }, { at: 3, label: "Searching every subway route" }, { at: 6, label: "AI is picking the best route" }, { at: 20, label: "Writing views and food stops" }, { at: 40, label: "Putting your trip together" }, { at: 70, label: "Almost there" }]} expected={45}>Make me a new one</SubmitButton>
             <p className="text-xs text-neutral-500">Picks a random {mood.label.toLowerCase()} spot and plans it from 116 St with your riding preferences.</p>
           </form>
         </section>
