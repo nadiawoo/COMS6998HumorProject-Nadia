@@ -1,5 +1,5 @@
 import { LineBullet } from "./LineBullet";
-import { AlertIcon, ArrowIcon, ForkIcon, PinIcon, TransferIcon, ViewIcon, WalkIcon } from "./Icons";
+import { AlertIcon, ArrowIcon, ForkIcon, StarIcon, TransferIcon, ViewIcon, WalkIcon } from "./Icons";
 import { station, type RideLeg } from "@/lib/transit";
 import { depKey, fmtTime, type Departures, type SegmentTime } from "@/lib/time";
 import type { FeedItem } from "@/lib/routes";
@@ -7,6 +7,11 @@ import type { FeedItem } from "@/lib/routes";
 const gmapsPlace = (q: string) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q + " New York")}`;
 const gmapsWalk = (a: { lat: number; lon: number }, b: { lat: number; lon: number }) =>
   `https://www.google.com/maps/dir/?api=1&origin=${a.lat},${a.lon}&destination=${b.lat},${b.lon}&travelmode=walking`;
+// Walking loop through several places (Google Maps allows waypoints in a walking route)
+const gmapsLoop = (from: { lat: number; lon: number }, spots: { lat: number; lon: number }[]) => {
+  const last = spots[spots.length - 1], mid = spots.slice(0, -1);
+  return `https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lon}&destination=${last.lat},${last.lon}${mid.length ? `&waypoints=${mid.map((p) => `${p.lat},${p.lon}`).join("|")}` : ""}&travelmode=walking`;
+};
 const T = ({ d }: { d?: Date }) => (d ? <span className="tabular-nums">{fmtTime(d)}</span> : null);
 
 function Ride({ leg, time, live, first }: { leg: RideLeg; time?: SegmentTime["legs"][number]; live?: Departures | null; first: boolean }) {
@@ -89,7 +94,7 @@ export function TripSteps({ item, times, live }: { item: FeedItem; times?: Segme
             {/* Arrival at a stop of the trip */}
             <div className="bg-black p-4 text-white">
               <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-neutral-400">
-                <PinIcon size={14} /> Stop {s + 1}
+                <StarIcon size={14} /> Stop {s + 1}
                 {st && <> · arrive <T d={st.arrive} /></>}
                 {target.kind === "must" && target.time ? ` · be there by ${target.time}` : ""}
                 {stopInfo?.minutes ? ` · spend ~${stopInfo.minutes} min` : ""}
@@ -107,6 +112,14 @@ export function TripSteps({ item, times, live }: { item: FeedItem; times?: Segme
                   ))}
                 </ul>
               ) : null}
+              {(() => {
+                const spots = (stopInfo?.suggestions ?? []).filter((g) => typeof g.lat === "number" && typeof g.lon === "number") as { lat: number; lon: number }[];
+                return spots.length > 0 && (
+                  <a href={gmapsLoop(target, spots)} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 border border-white px-3 py-1.5 text-sm font-bold hover:bg-white hover:text-black">
+                    <WalkIcon size={16} /> Walk the loop ({spots.length} spot{spots.length > 1 ? "s" : ""}, on the map above)
+                  </a>
+                );
+              })()}
               {st && s < segments.length - 1 && <p className="mt-3 text-sm text-neutral-400">Head on around <T d={st.leave} /></p>}
             </div>
           </li>

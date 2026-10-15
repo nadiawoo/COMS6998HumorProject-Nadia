@@ -9,8 +9,11 @@ import { VibeCard } from "@/components/VibeCard";
 import { GoogleSteps, TripSteps } from "@/components/TripSteps";
 import { Votes } from "@/components/Votes";
 import { LineBullet } from "@/components/LineBullet";
-import { AlertIcon, ClockIcon } from "@/components/Icons";
+import { AlertIcon, ClockIcon, StarIcon } from "@/components/Icons";
+import { hrs, outingMinutes, themeOf } from "@/lib/themes";
 import MapClient from "@/components/MapClient";
+
+export const maxDuration = 30;
 
 export default async function RoutePage({ params, searchParams }: PageProps<"/routes/[id]">) {
   const { id } = await params;
@@ -27,7 +30,10 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
 
   // This page is a template until you pick a departure time; then every step gets a clock time.
   const planned = item.facts.planned_leave ? new Date(item.facts.planned_leave) : null;
-  const leaveAt = parseNy(String(sp.leave ?? "")) ?? (planned && planned.getTime() > Date.now() ? planned : new Date());
+  const picked = parseNy(String(sp.leave ?? ""));
+  const usePlanned = !picked && planned && planned.getTime() > Date.now();
+  const leaveAt = picked ?? (usePlanned ? planned : new Date());
+  const isTemplate = !picked && !usePlanned; // nobody chose a time: show it as "if you left now"
   const minutesAway = (leaveAt.getTime() - Date.now()) / 60000;
   const rides = item.facts.segments.flatMap((seg) => seg.legs.filter((l): l is RideLeg => l.type === "ride"));
   let live: Departures | null = null;
@@ -35,9 +41,10 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
     live = new Map();
     await Promise.all(rides.map(async (r) => { const d = await departures(r.line, r.from, r.dir); if (d) live!.set(depKey(r), d); }));
   }
-  const dwell = item.facts.stops.slice(1).map((st, i) => item.card.stops?.find((x) => x.stop === i + 1)?.minutes ?? (st.kind === "must" ? 0 : 60));
+  const dwell = item.facts.stops.slice(1).map((st, i) => item.card.stops?.find((x) => x.stop === i + 1)?.minutes ?? (st.kind === "must" ? 0 : Math.max(45, item.facts.segments[i]?.minutes ?? 45)));
+  const theme = themeOf(item);
   const times = buildTimeline(item.facts.segments, item.facts.stops, dwell, leaveAt, live ?? undefined);
-  const warnings = timeWarnings(item.facts.segments, times, item.facts.stops, item.vibe, leaveAt);
+  const warnings = timeWarnings(item.facts.segments, times, item.facts.stops, theme, leaveAt);
   const wrongDay = serviceDay(leaveAt) !== item.facts.when;
   const alerts = minutesAway < 180 ? await serviceAlerts(s.lines) : [];
   const end = times[times.length - 1];
@@ -49,7 +56,7 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
       <VibeCard item={item} />
 
       <header className="space-y-2">
-        <p className="text-xs font-bold uppercase tracking-widest text-neutral-500">{item.vibe}</p>
+        <p className="text-xs font-bold uppercase tracking-widest text-neutral-500">{theme} · about {hrs(outingMinutes(item))} out</p>
         <h1 className="text-3xl font-bold leading-tight tracking-tight">{item.card.title}</h1>
         <p className="text-lg text-neutral-700">{item.card.hook}</p>
         {/* All stops of the trip */}
@@ -57,7 +64,7 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
           {item.facts.stops.map((st, i) => (
             <li key={i} className="flex items-center gap-2">
               {i > 0 && <span className="text-neutral-400">→</span>}
-              <span className={`flex h-6 min-w-6 items-center justify-center px-1 text-xs font-bold ${i ? "bg-black text-white" : "border border-black"}`}>{i || "A"}</span>
+              {i ? <StarIcon size={18} /> : <span className="h-3.5 w-3.5 rounded-full border-[3px] border-black" />}
               <span className="font-medium">{st.name}</span>
             </li>
           ))}
@@ -77,15 +84,18 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
 
       {/* Turn the template into a plan for a specific departure */}
       <section className="space-y-3 border-2 border-black p-4">
-        <form className="flex flex-wrap items-end gap-3">
-          <label className="space-y-1">
-            <span className="block text-xs font-bold uppercase tracking-widest text-neutral-500">Leaving at</span>
+        <p className="text-xs font-bold uppercase tracking-widest text-neutral-500">
+          {isTemplate ? "Trip template — times below are if you left now" : picked && Math.abs(picked.getTime() - Date.now()) < 5 * 60000 ? "Leaving now" : usePlanned ? "Planned departure" : "Your departure"}
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <Link href={`/routes/${item.id}?leave=${toNyInput(new Date())}`} className="border border-black px-4 py-2.5 text-sm font-bold hover:bg-black hover:text-white">Go now</Link>
+          <form className="flex gap-2">
             <input type="datetime-local" name="leave" defaultValue={toNyInput(leaveAt)} className="border border-black px-3 py-2" />
-          </label>
-          <button className="bg-black px-4 py-2.5 font-bold text-white">Plan it</button>
-        </form>
+            <button className="bg-black px-4 py-2.5 text-sm font-bold text-white">Plan for this time</button>
+          </form>
+        </div>
         <p className="font-bold">
-          {fmtDay(leaveAt)}: leave {fmtTime(leaveAt)} · back on your own by {fmtTime(end.leave)}
+          {fmtDay(leaveAt)}: leave {fmtTime(leaveAt)} · done around {fmtTime(end.leave)}
           {live && live.size > 0 ? " · using live train times" : ""}
         </p>
         <p className="text-sm text-neutral-600">Sunset {fmtTime(sunTimes(leaveAt).sunset)}.</p>

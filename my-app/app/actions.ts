@@ -4,9 +4,10 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase";
-import { CAMPUS, DEFAULT_PREFS, distanceKm, DESTINATIONS, HARD_TRANSFERS, tripFacts, type Prefs, type StopKind, type TripStop, type When } from "@/lib/transit";
-import { fmtDay, fmtTime, nyHour, parseNy, serviceDay, sunTimes } from "@/lib/time";
-import { daysText, EVENTS, eventsNear } from "@/lib/events";
+import { CAMPUS, DEFAULT_PREFS, distanceKm, DESTINATIONS, HARD_TRANSFERS, tripFacts, type Point, type Prefs, type StopKind, type TripStop, type When } from "@/lib/transit";
+import { fmtDay, fmtTime, nyHour, parseNy, serviceDay, sunTimes, toNyInput } from "@/lib/time";
+import { daysText, EVENTS, eventsNear, eventsOn } from "@/lib/events";
+import { BUDGETS, MOODS } from "@/lib/themes";
 import { routeOptions } from "@/lib/router";
 import { assemble, buildWritePrompt, locatePlaces, MODEL, parseRidingNotes, writeTrip, type TripCard } from "@/lib/generate";
 
@@ -80,65 +81,67 @@ export async function updateProfile(formData: FormData) {
 }
 
 // ---------- Trip planning: code finds real routes, AI picks + writes ----------
-export async function generateRoute(formData: FormData) {
+type Wanted = { input: string; kind: StopKind; time?: string; point?: Point };
+type PlanInput = { start: string; stops: Wanted[]; mode: "now" | "pick" | "anytime"; leave?: string; budget: number };
+
+// Shared by "Plan a trip" and "Feeling lucky". Returns the new route id, or an error to show.
+async function planTrip(input: PlanInput): Promise<{ id: string } | { error: string }> {
   const { supabase, user } = await requireUser();
-  const texts = formData.getAll("stop_text").map((t) => String(t).trim().slice(0, 80));
-  const kinds = formData.getAll("stop_kind").map(String);
-  const times = formData.getAll("stop_time").map(String);
-  const startText = String(formData.get("start") ?? "").trim().slice(0, 80);
-  const vibe = String(formData.get("vibe") ?? "Scenic views").slice(0, 40);
-  const timeAvail = String(formData.get("time") ?? "Half day").slice(0, 20);
-  // "Leaving at" is optional: blank = whenever (a reusable template, planned for weekend daytime service)
-  const chosen = parseNy(String(formData.get("leave") ?? ""));
+  const t0 = Date.now();
+  const log = (step: string) => console.log(`[plan] ${step} at ${Date.now() - t0} ms`);
+  // When: "now" = live plan for right now; "pick" = a chosen time; "anytime" = reusable template (weekend daytime service)
+  const chosen = input.mode === "now" ? new Date() : input.mode === "pick" ? parseNy(input.leave ?? "") : null;
+  if (input.mode === "pick" && !chosen) return { error: "Pick a day and time, or choose Now / Anytime." };
   const leaveAt = chosen ?? new Date();
   const when: When = chosen ? serviceDay(chosen) : "weekend";
-  const wanted = texts.map((t, i) => ({ input: t, kind: (kinds[i] === "must" ? "must" : "explore") as StopKind, time: times[i] || undefined })).filter((x) => x.input).slice(0, 3);
-  const back = `/plan?to=${encodeURIComponent(wanted[0]?.input ?? "")}`;
-  const fail = (msg: string): never => redirect(`${back}&error=${encodeURIComponent(msg)}`);
-  if (wanted.length === 0) fail("Add at least one stop.");
+  if (input.stops.length === 0) return { error: "Add at least one stop." };
 
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { count } = await supabase.from("routes").select("id", { count: "exact", head: true }).eq("created_by", user.id).gte("created_at", since);
-  if ((count ?? 0) >= DAILY_LIMIT) fail(`You've planned ${DAILY_LIMIT} trips today — come back tomorrow!`);
+  if ((count ?? 0) >= DAILY_LIMIT) return { error: `You've planned ${DAILY_LIMIT} trips today — come back tomorrow!` };
 
   const { data: profile } = await supabase.from("profiles").select("max_walk_minutes, transfer_style, avoid_transfers, traits").eq("id", user.id).maybeSingle();
   const { traits, ...prefFields } = profile ?? {};
   const prefs: Prefs = { ...DEFAULT_PREFS, ...prefFields } as Prefs;
   const likes: string[] = (traits as { likes?: string[] } | null)?.likes ?? [];
 
-  // 1) Where is everything? Starter destinations + campus are known; ask Gemini for the rest.
-  const all = [{ input: startText, kind: "start" as StopKind, time: undefined as string | undefined }, ...wanted];
-  const known = (t: string) => !t || /columbia|116/i.test(t) ? CAMPUS : [...DESTINATIONS, ...EVENTS].find((d) => d.name.toLowerCase() === t.toLowerCase());
-  const unknown = all.filter((x) => !known(x.input)).map((x) => x.input);
+  // 1) Where is everything? Campus, starter destinations, events and mood places are known; ask Gemini only for the rest.
+  const all: Wanted[] = [{ input: input.start, kind: "start" }, ...input.stops];
+  const catalog = [...DESTINATIONS, ...EVENTS, ...MOODS.flatMap((m) => m.places)];
+  const known = (x: Wanted) => x.point ?? (!x.input || /columbia|116/i.test(x.input) ? CAMPUS : catalog.find((d) => d.name.toLowerCase() === x.input.toLowerCase()));
+  const unknown = all.filter((x) => !known(x)).map((x) => x.input);
   let locatePrompt = "";
   let located: { name: string; lat: number; lon: number; found: boolean }[] = [];
   if (unknown.length) {
     try { ({ prompt: locatePrompt, places: located } = await locatePlaces(unknown)); }
-    catch (e) { fail(`The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.`); }
+    catch (e) { return { error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }; }
+    log("located places");
   }
-  const stops: TripStop[] = all.map((x) => {
-    const k = known(x.input);
+  const stops: TripStop[] = [];
+  for (const x of all) {
+    const k = known(x);
     const p = k ?? located[unknown.indexOf(x.input)];
     const inNyc = p && p.lat > 40.49 && p.lat < 40.92 && p.lon > -74.27 && p.lon < -73.68;
-    if (!p || !inNyc || ("found" in p && !p.found)) fail(`Couldn't find "${x.input}" in NYC — try a more specific name.`);
-    return { name: k ? k.name : p!.name || x.input, lat: p!.lat, lon: p!.lon, kind: x.kind, time: x.time, input: x.input };
-  });
+    if (!p || !inNyc || ("found" in p && !p.found)) return { error: `Couldn't find "${x.input}" in NYC — try a more specific name.` };
+    stops.push({ name: k ? k.name : p.name || x.input, lat: p.lat, lon: p.lon, kind: x.kind, time: x.time, input: x.input || k?.name || "" });
+  }
 
-  // 2) Real routes for every part of the trip (Dijkstra over the subway map)
-  // Search each part at the hour you'd actually be riding it (rough: previous part + an hour at each stop)
+  // 2) Real routes for every part of the trip (Dijkstra over the subway map), at the hour you'd be riding it
   let clock = leaveAt.getTime();
   const options = stops.slice(1).map((to, i) => {
-    const opts = routeOptions(stops[i], to, prefs, when, chosen ? nyHour(new Date(clock)) : 13); // whenever: assume early afternoon
-    clock += ((opts[0]?.minutes ?? 30) + (to.kind === "must" ? 0 : 60)) * 60000;
+    const opts = routeOptions(stops[i], to, prefs, when, chosen ? nyHour(new Date(clock)) : 13); // anytime: assume early afternoon
+    const travel = opts[0]?.minutes ?? 30;
+    clock += (travel + (to.kind === "must" ? 0 : Math.max(45, travel))) * 60000;
     return opts;
   });
   const missing = options.findIndex((o) => o.length === 0);
-  if (missing >= 0) fail(`No route to ${stops[missing + 1].name} fits your walking/transfer preferences. Try loosening them in Profile.`);
+  if (missing >= 0) return { error: `No route to ${stops[missing + 1].name} fits your walking/transfer preferences. Try loosening them in Profile.` };
+  log("routes computed");
 
-  // 3) Gemini picks options and writes views, places and the vibe card
+  // 3) Gemini picks options and writes views, places (with a walking loop) and the poster
   const writePrompt = buildWritePrompt({
-    stops, options, vibe, timeAvail, when, prefs, likes,
-    leaving: chosen ? `${fmtDay(chosen)}, ${fmtTime(chosen)}` : "flexible — no set day or time (suggest the best time to go in best_time; frequencies shown are for weekend early afternoon)",
+    stops, options, timeBudget: input.budget, when, prefs, likes,
+    leaving: chosen ? `${fmtDay(chosen)}, ${fmtTime(chosen)}${input.mode === "now" ? " (leaving right now)" : ""}` : "flexible — no set day or time (suggest the best time to go in best_time; frequencies shown are for weekend early afternoon)",
     sunset: chosen ? fmtTime(sunTimes(chosen).sunset) : `around ${fmtTime(sunTimes(new Date()).sunset)} this time of year`,
     events: chosen
       ? [...new Set(stops.slice(1).flatMap((st) => eventsNear(st, chosen)))].map((e) => `${e.name} (${e.area}, ${e.hours}) — ${e.note}`)
@@ -146,22 +149,62 @@ export async function generateRoute(formData: FormData) {
   });
   let card: TripCard;
   try { card = await writeTrip(writePrompt); }
-  catch (e) { return fail(`The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.`); }
+  catch (e) { return { error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }; }
+  log("trip written");
   const segments = assemble(options, card);
+
+  // Sanity checks in code: time at a place is at least the trip there (30 min–4 hr),
+  // and trek spots must really be near their stop (within ~2 km) to go on the map.
+  card.stops = (card.stops ?? []).map((cs) => {
+    const st = stops[cs.stop], seg = segments[cs.stop - 1];
+    if (!st || !seg) return cs;
+    const minutes = st.kind === "must" ? Math.max(0, Math.min(240, cs.minutes || 0)) : Math.max(30, seg.minutes, Math.min(240, cs.minutes || 0));
+    const suggestions = (cs.suggestions ?? []).map((g) =>
+      typeof g.lat === "number" && typeof g.lon === "number" && distanceKm(st, { lat: g.lat, lon: g.lon }) < 2 ? g : { name: g.name, detail: g.detail });
+    return { ...cs, minutes: Math.round(minutes / 5) * 5, suggestions };
+  });
 
   const { data: row, error } = await supabase.from("routes").insert({
     destination: stops.slice(1).map((s) => s.name).join(" → "),
-    vibe,
+    vibe: card.theme ?? "Neighborhood wander", // the AI's theme (the column predates themes)
     prompt: [locatePrompt, writePrompt].filter(Boolean).join("\n\n---\n\n"),
     model: MODEL,
     card,
-    facts: { version: 2, when, stops, segments, summary: tripFacts(segments), planned_leave: chosen?.toISOString() },
+    facts: { version: 2, when, stops, segments, summary: tripFacts(segments), planned_leave: input.mode === "pick" ? chosen?.toISOString() : undefined },
     prefs_used: prefs,
   }).select("id").single();
-  if (error) return fail(`Saving failed: ${error.message}`);
-
+  if (error) return { error: `Saving failed: ${error.message}` };
+  log("saved");
   revalidatePath("/", "layout");
-  redirect(`/routes/${row.id}`);
+  return { id: row.id };
+}
+
+const budgetOf = (v: FormDataEntryValue | null) => BUDGETS.find((b) => b.id === v)?.minutes ?? 270;
+const modeOf = (v: FormDataEntryValue | null) => (v === "now" || v === "pick" ? v : "anytime") as PlanInput["mode"];
+const leaveQuery = (mode: PlanInput["mode"]) => (mode === "now" ? `?leave=${toNyInput(new Date())}` : "");
+
+export async function generateRoute(formData: FormData) {
+  const texts = formData.getAll("stop_text").map((t) => String(t).trim().slice(0, 80));
+  const kinds = formData.getAll("stop_kind").map(String);
+  const times = formData.getAll("stop_time").map(String);
+  const stops = texts.map((t, i) => ({ input: t, kind: (kinds[i] === "must" ? "must" : "explore") as StopKind, time: times[i] || undefined })).filter((x) => x.input).slice(0, 3);
+  const mode = modeOf(formData.get("when"));
+  const out = await planTrip({ start: String(formData.get("start") ?? "").trim().slice(0, 80), stops, mode, leave: String(formData.get("leave") ?? ""), budget: budgetOf(formData.get("time")) });
+  if ("error" in out) redirect(`/plan?to=${encodeURIComponent(stops[0]?.input ?? "")}&error=${encodeURIComponent(out.error)}`);
+  redirect(`/routes/${out.id}${leaveQuery(mode)}`);
+}
+
+// Feeling lucky -> "Make me a new one": a random place for that mood, planned like any other trip
+export async function luckyNew(formData: FormData) {
+  const mood = MOODS.find((m) => m.id === formData.get("mood")) ?? MOODS[0];
+  const mode = formData.get("when") === "now" ? "now" : "anytime";
+  // Seasonal also draws from the markets/events that are on today (or ever, for anytime)
+  const extra = mood.id === "seasonal" ? (mode === "now" ? eventsOn(new Date()) : EVENTS) : [];
+  const pool = [...mood.places, ...extra.map((e) => ({ name: e.name, lat: e.lat, lon: e.lon }))];
+  const place = pool[Math.floor(Math.random() * pool.length)];
+  const out = await planTrip({ start: "", stops: [{ input: place.name, kind: "explore", point: place }], mode, budget: 240 });
+  if ("error" in out) redirect(`/lucky?mood=${mood.id}&when=${mode}&error=${encodeURIComponent(out.error)}`);
+  redirect(`/routes/${out.id}${leaveQuery(mode)}`);
 }
 
 // ---------- Voting ----------

@@ -50,8 +50,9 @@ export async function viewerPrefs(supabase: SupabaseClient, userId?: string): Pr
 
 // ---------- What the map needs (keeps station data on the server) ----------
 export type MapLeg = { path: [number, number][]; color: string; dashed: boolean };
-export type MapMarker = { lat: number; lon: number; label: string; n?: number };
-export type MapRoute = { id: string; title: string; color: string; legs: MapLeg[]; markers: MapMarker[] };
+export type MapMarker = { lat: number; lon: number; label: string };
+export type MapTrek = { path: [number, number][]; spots: { lat: number; lon: number; label: string }[] };
+export type MapRoute = { id: string; title: string; color: string; legs: MapLeg[]; markers: MapMarker[]; treks?: MapTrek[] };
 
 // Distinct colors for routes on the overview map (subway-bullet palette)
 export const ROUTE_COLORS = ["#EE352E", "#0039A6", "#00933C", "#FF6319", "#B933AD", "#996633", "#6CBE45", "#E6A800", "#00A1DE", "#808183"];
@@ -61,14 +62,21 @@ function legsOf(r: RouteRow, colorFor: (line: string) => string): MapLeg[] {
     ? { path: [[l.from.lat, l.from.lon], [l.to.lat, l.to.lon]] as [number, number][], color: "#555", dashed: true }
     : { path: l.stops.map((id) => station(id)).filter(Boolean).map((s) => [s!.lat, s!.lon] as [number, number]), color: colorFor(l.line), dashed: false }));
 }
-const stopMarkers = (r: RouteRow, labels?: string[]): MapMarker[] =>
-  r.facts.stops.slice(1).map((s, i) => ({ lat: s.lat, lon: s.lon, n: i + 1, label: labels?.[i] ? `${i + 1} · ${labels[i]}` : s.name }));
+const stopMarkers = (r: RouteRow, arrivals?: string[]): MapMarker[] =>
+  r.facts.stops.slice(1).map((s, i) => ({ lat: s.lat, lon: s.lon, label: arrivals?.[i] ? `${s.name} · ${arrivals[i]}` : s.name }));
+// Walking loop at each stop through the AI's suggested places (only ones verified to be near the stop)
+const treksOf = (r: RouteRow): MapTrek[] => r.facts.stops.slice(1).map((st, i) => {
+  const spots = (r.card.stops?.find((x) => x.stop === i + 1)?.suggestions ?? [])
+    .filter((g) => typeof g.lat === "number" && typeof g.lon === "number")
+    .map((g) => ({ lat: g.lat!, lon: g.lon!, label: g.name }));
+  return { spots, path: spots.length ? [[st.lat, st.lon] as [number, number], ...spots.map((g) => [g.lat, g.lon] as [number, number])] : [] };
+}).filter((t) => t.spots.length);
 
 // Overview: one color per route
 export const mapSummary = (r: RouteRow, i: number): MapRoute => {
   const color = ROUTE_COLORS[i % ROUTE_COLORS.length];
   return { id: r.id, title: r.card.title, color, legs: legsOf(r, () => color).map((l) => ({ ...l, color })), markers: stopMarkers(r) };
 };
-// Detail: legs colored by subway line, walks dashed, stops labeled with arrival times
-export const mapDetail = (r: RouteRow, arrivals?: string[]): MapRoute =>
-  ({ id: r.id, title: r.card.title, color: "#000", legs: legsOf(r, (line) => lineColor(line).bg), markers: stopMarkers(r, arrivals) });
+// Detail: legs colored by subway line, walks dashed, stops as stars, trek spots labeled
+export const mapDetail = (r: RouteRow, arrivals?: string[], color = "#000"): MapRoute =>
+  ({ id: r.id, title: r.card.title, color, legs: legsOf(r, (line) => lineColor(line).bg), markers: stopMarkers(r, arrivals), treks: treksOf(r) });

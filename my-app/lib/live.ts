@@ -17,7 +17,7 @@ const num = (x: unknown) => (x && typeof x === "object" && "toNumber" in x ? (x 
 const feedCache = new Map<string, Promise<GtfsRealtimeBindings.transit_realtime.FeedMessage | null>>();
 function feed(name: string) {
   if (!feedCache.has(name)) {
-    feedCache.set(name, fetch(BASE + name, { next: { revalidate: 30 } })
+    feedCache.set(name, fetch(BASE + name, { next: { revalidate: 30 }, signal: AbortSignal.timeout(4000) })
       .then(async (r) => (r.ok ? GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(new Uint8Array(await r.arrayBuffer())) : null))
       .catch(() => null));
     setTimeout(() => feedCache.delete(name), 30000);
@@ -54,7 +54,7 @@ type AlertJson = { entity?: { id: string; alert?: {
 // Current service alerts that mention any of `lines`
 export async function serviceAlerts(lines: string[]): Promise<{ lines: string[]; type: string; text: string }[] | null> {
   try {
-    const res = await fetch(BASE + "camsys%2Fsubway-alerts.json", { next: { revalidate: 120 } });
+    const res = await fetch(BASE + "camsys%2Fsubway-alerts.json", { next: { revalidate: 120 }, signal: AbortSignal.timeout(4000) });
     if (!res.ok) return null;
     const data = (await res.json()) as AlertJson;
     const now = Date.now() / 1000, seen = new Set<string>(), out = [];

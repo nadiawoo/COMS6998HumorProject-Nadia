@@ -32,3 +32,9 @@ export const CameraIcon = ({ size = 18, className }: P) => svg(size, className, 
 export const ArrowIcon = ({ size = 16, className }: P) => svg(size, className, <path d="M5 12h14M13 6l6 6-6 6" />);
 export const PlusIcon = ({ size = 18, className }: P) => svg(size, className, <path d="M12 5v14M5 12h14" />);
 export const SunIcon = ({ size = 20, className }: P) => svg(size, className, <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5" /></>);
+// Stops of a trip (numbers belong to train lines)
+export const StarIcon = ({ size = 16, className, color }: P & { color?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden>
+    <path d="M12 1.8l3.1 6.6 7.2.8-5.4 4.9 1.5 7.1L12 17.6l-6.4 3.6 1.5-7.1L1.7 9.2l7.2-.8z" fill={color ?? "currentColor"} />
+  </svg>
+);

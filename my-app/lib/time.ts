@@ -107,7 +107,7 @@ export function timeWarnings(segments: Segment[], times: SegmentTime[], stops: T
   }));
   if (scenic.length && scenic.every((x) => x.start.getTime() > sunset.getTime() + 20 * 60000))
     warn.push(`Sunset is at ${fmtTime(sunset)} — the above-ground stretches will be dark by the time you reach them. City lights instead, or leave earlier for the views.`);
-  if (/sunset/i.test(vibe) && scenic.length) {
+  if (/sunset|views/i.test(vibe) && scenic.length) {
     const first = scenic[0].start.getTime();
     const target = sunset.getTime() - 15 * 60000;
     if (Math.abs(first - target) > 45 * 60000) {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { PinIcon, PlusIcon } from "./Icons";
 import { SubmitButton } from "./SubmitButton";
+import { BUDGETS } from "@/lib/themes";
 
 type Row = { text: string; kind: "explore" | "must"; time: string };
 const chip = "cursor-pointer border border-black/25 px-3 py-1.5 text-sm has-[:checked]:border-black has-[:checked]:bg-black has-[:checked]:text-white";
@@ -10,12 +11,21 @@ const chip = "cursor-pointer border border-black/25 px-3 py-1.5 text-sm has-[:ch
 // Multi-stop trip form: up to 3 stops, each "explore" or "need to be there (by a time)"
 export type Place = { name: string; tag?: string; days?: number[]; months?: number[] };
 
-export function PlanForm({ action, initial, places, vibes, defaultLeave }: {
-  action: (fd: FormData) => void; initial: string; places: Place[]; vibes: string[]; defaultLeave: string;
+type Mode = "now" | "pick" | "anytime";
+const MODES: { id: Mode; label: string; help: string }[] = [
+  { id: "now", label: "Now", help: "Planned for right now: live train times and what's open today." },
+  { id: "pick", label: "Pick a time", help: "Trains, frequencies, sunset and events are checked for that time." },
+  { id: "anytime", label: "Anytime", help: "A reusable trip anyone can take — pick the time on its page when you go." },
+];
+
+export function PlanForm({ action, initial, places, today }: {
+  action: (fd: FormData) => void; initial: string; places: Place[]; today: string;
 }) {
-  const [leave, setLeave] = useState(defaultLeave);
-  // Is a recurring event on during the chosen day? (date part of the datetime-local value)
-  const d = leave ? new Date(`${leave.slice(0, 10)}T12:00`) : null;
+  const [mode, setMode] = useState<Mode>("now");
+  const [leave, setLeave] = useState("");
+  // Is a recurring event on during the day you're going? (date part of the datetime-local value)
+  const day = mode === "now" ? today : mode === "pick" ? leave : "";
+  const d = day ? new Date(`${day.slice(0, 10)}T12:00`) : null;
   const onThatDay = (p: Place) => !!d && !!p.days && p.days.includes(d.getDay()) && !!p.months?.includes(d.getMonth() + 1);
   const happening = places.filter(onThatDay);
   const addStop = (name: string) => {
@@ -97,29 +107,27 @@ export function PlanForm({ action, initial, places, vibes, defaultLeave }: {
         )}
       </section>
 
+      {/* When: one clear choice instead of an optional date field */}
       <fieldset className="space-y-2">
-        <legend className="mb-2 text-xs font-bold uppercase tracking-widest text-neutral-500">Vibe</legend>
-        <div className="flex flex-wrap gap-2">
-          {vibes.map((v, i) => <label key={v} className={chip}><input type="radio" name="vibe" value={v} defaultChecked={i === 0} className="sr-only" />{v}</label>)}
+        <legend className="mb-2 text-xs font-bold uppercase tracking-widest text-neutral-500">When are you going?</legend>
+        <input type="hidden" name="when" value={mode} />
+        <div className="grid grid-cols-3 border border-black">
+          {MODES.map((m) => (
+            <button key={m.id} type="button" onClick={() => setMode(m.id)}
+              className={`py-2.5 text-sm font-bold ${m.id !== "now" ? "border-l border-black" : ""} ${mode === m.id ? "bg-black text-white" : "hover:bg-neutral-100"}`}>{m.label}</button>
+          ))}
         </div>
+        {mode === "pick" && <input type="datetime-local" name="leave" required value={leave} onChange={(e) => setLeave(e.target.value)} className="w-full border border-black/25 bg-white px-3 py-2.5" />}
+        <p className="text-xs text-neutral-500">{MODES.find((m) => m.id === mode)!.help}</p>
       </fieldset>
 
-      <div className="grid gap-5">
-        <label className="space-y-2">
-          <span className="block text-xs font-bold uppercase tracking-widest text-neutral-500">Leaving at</span>
-          <div className="flex gap-2">
-            <input type="datetime-local" name="leave" value={leave} onChange={(e) => setLeave(e.target.value)} className="min-w-0 flex-1 border border-black/25 bg-white px-3 py-2.5" />
-            <button type="button" onClick={() => setLeave("")} className={`border px-3 text-sm ${leave ? "border-black/25" : "border-black bg-black text-white"}`}>Whenever</button>
-          </div>
-          <span className="block text-xs text-neutral-500">{leave ? "Trains, frequencies and events are checked for this time." : "No set time: you'll get a reusable trip and can pick a time on its page later."}</span>
-        </label>
-        <fieldset className="space-y-2">
-          <legend className="mb-2 text-xs font-bold uppercase tracking-widest text-neutral-500">Time you have</legend>
-          <div className="flex flex-wrap gap-2">
-            {["About 1 hour", "Half day", "Whole day"].map((t) => <label key={t} className={chip}><input type="radio" name="time" value={t} defaultChecked={t === "Half day"} className="sr-only" />{t}</label>)}
-          </div>
-        </fieldset>
-      </div>
+      <fieldset className="space-y-2">
+        <legend className="mb-2 text-xs font-bold uppercase tracking-widest text-neutral-500">Time you have</legend>
+        <div className="flex flex-wrap gap-2">
+          {BUDGETS.map((t) => <label key={t.id} className={chip}><input type="radio" name="time" value={t.id} defaultChecked={t.id === "half"} className="sr-only" />{t.label}</label>)}
+        </div>
+        <p className="text-xs text-neutral-500">Most of it goes to the places, not the train.</p>
+      </fieldset>
 
       <SubmitButton pending="Finding real routes, then writing your trip…">
         <span className="flex items-center justify-center gap-2"><PinIcon size={18} /> Plan my trip</span>

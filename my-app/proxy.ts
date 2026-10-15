@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 // Runs before every page: keeps the login session fresh and gates protected routes.
-const PROTECTED = ["/plan", "/my-routes", "/members", "/profile"];
+const PROTECTED = ["/plan", "/my-routes", "/members", "/profile", "/lucky"];
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });

@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase";
-import { mapSummary, rankedRoutes, ROUTE_COLORS, viewerPrefs, withScores, type RouteRow } from "@/lib/routes";
-import { fmtDay, fmtTime, isDark, nyWeekday, parseNy, serviceDay, sunTimes } from "@/lib/time";
+import { mapDetail, mapSummary, rankedRoutes, ROUTE_COLORS, viewerPrefs, withScores, type RouteRow } from "@/lib/routes";
+import { themeOf } from "@/lib/themes";
+import { HomeMap, HomeShell, SelectableCard } from "@/components/HomeShell";
+import { fmtDay, fmtTime, isDark, nyWeekday, parseNy, serviceDay, sunTimes, toNyInput } from "@/lib/time";
 import { eventsOn } from "@/lib/events";
 import { fitFor } from "@/lib/transit";
 import { RouteCard } from "@/components/RouteCard";
-import MapClient from "@/components/MapClient";
-import { ArrowIcon, DownIcon, PinIcon } from "@/components/Icons";
+import { ArrowIcon, PinIcon } from "@/components/Icons";
 
 const TABS = { trending: "Trending", top: "Top rated", new: "New" } as const;
 const tabCls = (on: boolean) => `px-3 py-1.5 text-sm font-bold ${on ? "bg-black text-white" : "border border-black/20 hover:border-black"}`;
@@ -32,31 +33,33 @@ export default async function Home({ searchParams }: PageProps<"/">) {
   let items = await withScores(supabase, rows, user?.id);
   if (fitsOnly && prefs) items = items.filter((i) => fitFor(i.facts.segments, prefs).length === 0);
 
-  // "Leaving at": keep routes planned for that kind of day, and float the ones that suit the light
-  const leaveStr = String(sp.leave ?? "");
-  const leaveAt = parseNy(leaveStr);
+  // When: Anytime (all templates) / Now / Pick a time. A time keeps routes planned for that kind of day
+  // and floats the ones that suit the light (views before dark, food and museums after).
+  const mode = sp.when === "now" ? "now" : sp.when === "pick" ? "pick" : "anytime";
+  const leaveAt = mode === "now" ? new Date() : mode === "pick" ? parseNy(String(sp.leave ?? "")) : null;
+  const leaveStr = leaveAt ? toNyInput(leaveAt) : "";
   let timeNote = "";
   if (leaveAt) {
     const day = serviceDay(leaveAt), dark = isDark(leaveAt), { sunset } = sunTimes(leaveAt);
     const nearSunset = Math.abs(sunset.getTime() - leaveAt.getTime()) < 2.5 * 3600000 && leaveAt < sunset;
-    const fit = (v: string) => (/sunset/i.test(v) ? (nearSunset ? 2 : dark ? -2 : -1) : /rain|food/i.test(v) && dark ? 1 : /scenic/i.test(v) && dark ? -1 : 0);
-    items = items.filter((i) => i.facts.when === day).sort((a, b) => fit(b.vibe) - fit(a.vibe));
-    timeNote = `${day === "weekend" ? "Weekend" : "Weekday"} service · sunset ${fmtTime(sunset)}${dark ? " · after dark: views become city lights" : nearSunset ? " · sunset routes first" : ""}`;
+    const fit = (t: string) => (t === "Views & bridges" ? (nearSunset ? 2 : dark ? -1 : 0) : t === "Parks & outdoors" && dark ? -2 : /Food|Culture/.test(t) && dark ? 1 : 0);
+    items = items.filter((i) => i.facts.when === day).sort((a, b) => fit(themeOf(b)) - fit(themeOf(a)));
+    timeNote = `${mode === "now" ? `Now, ${fmtTime(leaveAt)}` : `${fmtDay(leaveAt)}, ${fmtTime(leaveAt)}`} · ${day} service · sunset ${fmtTime(sunset)}${dark ? " · after dark: views become city lights" : nearSunset ? " · views first, for sunset" : ""}`;
   }
   // What's on: the chosen day, or else today + the coming weekend
   const now = new Date();
   const days = leaveAt ? [leaveAt] : [0, 1, 2, 3, 4, 5, 6].map((k) => new Date(now.getTime() + k * 86400000)).filter((d, k) => k === 0 || [0, 6].includes(nyWeekday(d))).slice(0, 3);
   const whatsOn = days.map((d) => ({ day: d, events: eventsOn(d) })).filter((x) => x.events.length);
-  const keep = (extra: string) => `${extra}${leaveStr ? `&leave=${encodeURIComponent(leaveStr)}` : ""}`;
+  const keep = (extra: string) => `${extra}${mode !== "anytime" ? `&when=${mode}` : ""}${mode === "pick" ? `&leave=${encodeURIComponent(leaveStr)}` : ""}`;
+  const top = items.slice(0, 10);
+  const modeLink = (m: string) => `/?tab=${tab}${fitsOnly ? "&fits=1" : ""}${m === "anytime" ? "" : `&when=${m}`}`;
 
   return (
+    <HomeShell>
     <main className="home lg:grid lg:h-[calc(100svh-4rem)] lg:grid-cols-[1fr_440px]">
       {/* Map: the whole screen on phones, everything left of the panel on laptops */}
       <section className="relative h-[calc(100svh-4rem)] lg:h-full">
-        <MapClient routes={items.slice(0, 10).map(mapSummary)} height="100%" />
-        <a href="#routes" className="absolute bottom-6 left-1/2 z-[500] flex -translate-x-1/2 items-center gap-2 bg-black px-4 py-2.5 text-sm font-bold text-white lg:hidden">
-          {items.length ? `${items.length} routes` : "Routes"} <DownIcon size={16} />
-        </a>
+        <HomeMap routes={top.map(mapSummary)} details={top.map((r, i) => mapDetail(r, undefined, ROUTE_COLORS[i % ROUTE_COLORS.length]))} count={items.length} />
       </section>
 
       {/* Panel: right side on laptops, below the map on phones */}
@@ -68,7 +71,10 @@ export default async function Home({ searchParams }: PageProps<"/">) {
 
         {user ? (
           <div className="space-y-2">
-            <Link href="/plan" className="flex items-center justify-center gap-2 bg-black px-6 py-3 font-bold text-white"><PinIcon size={18} /> Plan a new trip</Link>
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <Link href="/plan" className="flex items-center justify-center gap-2 bg-black px-6 py-3 font-bold text-white"><PinIcon size={18} /> Plan a new trip</Link>
+              <Link href="/lucky" className="flex items-center justify-center border border-black px-4 py-3 text-sm font-bold hover:bg-black hover:text-white">Feeling lucky</Link>
+            </div>
             <form className="flex">
               <input name="q" defaultValue={q} placeholder="Search a destination" className="min-w-0 flex-1 border border-black px-3 py-2.5 focus:outline-none" />
               <button className="bg-black px-4 text-sm font-bold text-white">Search</button>
@@ -89,17 +95,23 @@ export default async function Home({ searchParams }: PageProps<"/">) {
           </nav>
         )}
 
-        {/* When are you going? Filters + reorders the templates; the trip page then shows clock times */}
-        <form className="flex items-end gap-2">
-          <input type="hidden" name="tab" value={tab} />
-          {fitsOnly && <input type="hidden" name="fits" value="1" />}
-          <label className="flex-1 space-y-1">
-            <span className="block text-xs font-bold uppercase tracking-widest text-neutral-500">Leaving at</span>
-            <input type="datetime-local" name="leave" defaultValue={leaveStr} className="w-full border border-black px-3 py-2" />
-          </label>
-          <button className="bg-black px-4 py-2.5 text-sm font-bold text-white">Show</button>
-          {leaveStr && <Link href={`/?tab=${tab}`} className="px-2 py-2.5 text-sm underline">Any time</Link>}
-        </form>
+        {/* When are you going? Anytime = all trip templates; Now / a time = only what works then, with clock times */}
+        <div className="space-y-2">
+          <div className="grid grid-cols-3 border border-black text-center text-sm font-bold">
+            {([["anytime", "Anytime"], ["now", "Now"], ["pick", "Pick a time"]] as const).map(([m, label], k) => (
+              <Link key={m} href={modeLink(m)} className={`py-2 ${k ? "border-l border-black" : ""} ${mode === m ? "bg-black text-white" : "hover:bg-neutral-100"}`}>{label}</Link>
+            ))}
+          </div>
+          {mode === "pick" && (
+            <form className="flex gap-2">
+              <input type="hidden" name="tab" value={tab} />
+              <input type="hidden" name="when" value="pick" />
+              {fitsOnly && <input type="hidden" name="fits" value="1" />}
+              <input type="datetime-local" name="leave" defaultValue={leaveStr} required className="min-w-0 flex-1 border border-black px-3 py-2" />
+              <button className="bg-black px-4 text-sm font-bold text-white">Show</button>
+            </form>
+          )}
+        </div>
         {timeNote && <p className="text-sm text-neutral-600">{timeNote}</p>}
 
         {/* Recurring markets & events — a reason to come back every week */}
@@ -122,15 +134,20 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         )}
 
         <div className="space-y-4">
-          {items.map((item, i) => <RouteCard key={item.id} item={item} prefs={prefs} rank={i + 1} color={i < 10 ? ROUTE_COLORS[i % ROUTE_COLORS.length] : undefined} leave={leaveStr || undefined} />)}
+          {items.map((item, i) => {
+            const color = i < 10 ? ROUTE_COLORS[i % ROUTE_COLORS.length] : undefined;
+            return <SelectableCard key={item.id} id={item.id} color={color}><RouteCard item={item} prefs={prefs} color={color} leave={leaveStr || undefined} /></SelectableCard>;
+          })}
         </div>
         {items.length === 0 && (
           <div className="border border-dashed border-black/40 p-6 text-center text-sm">
             {q ? <>No trips to “{q}” yet. <Link href={`/plan?to=${encodeURIComponent(q)}`} className="font-bold underline">Plan the first one</Link></> : "No trips yet."}
           </div>
         )}
-        <p className="text-xs text-neutral-500">Routes computed from MTA schedule data. Not affiliated with the MTA.</p>
+        <Link href="/explore" className="flex items-center justify-between border border-black p-3 text-sm font-bold hover:bg-black hover:text-white">Browse every trip by theme <ArrowIcon /></Link>
+        <p className="text-xs text-neutral-500">Click a route on the map or a card to focus it. Routes computed from MTA schedule data. Not affiliated with the MTA.</p>
       </aside>
     </main>
+    </HomeShell>
   );
 }

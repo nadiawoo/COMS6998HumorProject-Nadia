@@ -22,11 +22,13 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
         {/* Header styled like a station sign; links change when logged in (gated UI) */}
         <header className="sign sticky top-0 z-[1000]">
           <div className="flex h-16 items-center gap-4 px-4 pt-1">
-            <Link href="/" className="mr-auto text-xl font-bold tracking-tight">Journey <span className="text-sm font-normal text-neutral-400">from 116 St</span></Link>
+            <Link href="/" className="mr-auto text-xl font-bold tracking-tight">Journey <span className="hidden text-sm font-normal text-neutral-400 sm:inline">from 116 St</span></Link>
+            <Link href="/explore" className="text-sm">Explore</Link>
             {user ? (
               <>
-                <Link href="/my-routes" className="hidden text-sm sm:block">My routes</Link>
-                <Link href="/plan" className="flex items-center gap-1.5 bg-white px-4 py-2 text-sm font-bold text-black"><PinIcon size={16} /> Plan a trip</Link>
+                <Link href="/lucky" className="hidden text-sm sm:block">Feeling lucky</Link>
+                <Link href="/my-routes" className="hidden text-sm md:block">My routes</Link>
+                <Link href="/plan" className="flex items-center gap-1.5 bg-white px-3 py-2 text-sm font-bold text-black sm:px-4"><PinIcon size={16} /> <span className="hidden sm:inline">Plan a trip</span><span className="sm:hidden">Plan</span></Link>
                 <Link href="/profile" aria-label="Profile">
                   {profile?.profile_pic
                     // eslint-disable-next-line @next/next/no-img-element
