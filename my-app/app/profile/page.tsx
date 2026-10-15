@@ -1,3 +1,4 @@
+import { SubmitButton } from "@/components/SubmitButton";
 import { createClient } from "@/lib/supabase";
 import { signOut, updateProfile } from "../actions";
 import { DEFAULT_PREFS, HARD_TRANSFERS } from "@/lib/transit";
@@ -7,6 +8,8 @@ const input = "w-full border border-black/25 px-4 py-3 focus:border-black focus:
 const label = "block text-xs font-bold uppercase tracking-widest text-neutral-500";
 
 // Protected by proxy.ts
+export const maxDuration = 60; // saving "How you ride" asks the AI
+
 export default async function Profile({ searchParams }: PageProps<"/profile">) {
   const { saved } = await searchParams;
   const supabase = await createClient();
@@ -73,7 +76,7 @@ export default async function Profile({ searchParams }: PageProps<"/profile">) {
           </fieldset>
         </section>
 
-        <button className="w-full bg-black px-5 py-4 text-lg font-bold text-white">Save</button>
+        <SubmitButton pending="Saving" steps={[{ at: 0, label: "Saving" }, { at: 2, label: "AI is reading how you ride" }]} expected={10}>Save</SubmitButton>
       </form>
       <form action={signOut}><button className="text-sm underline">Log out</button></form>
     </main>

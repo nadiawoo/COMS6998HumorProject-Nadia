@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { PinIcon, PlusIcon } from "./Icons";
-import { SubmitButton } from "./SubmitButton";
+import { PLAN_STEPS, SubmitButton } from "./SubmitButton";
 import { BUDGETS } from "@/lib/themes";
 
 type Row = { text: string; kind: "explore" | "must"; time: string };
@@ -129,7 +129,7 @@ export function PlanForm({ action, initial, places, today }: {
         <p className="text-xs text-neutral-500">Most of it goes to the places, not the train.</p>
       </fieldset>
 
-      <SubmitButton pending="Finding real routes, then writing your trip…">
+      <SubmitButton pending="Planning your trip" steps={PLAN_STEPS} expected={50}>
         <span className="flex items-center justify-center gap-2"><PinIcon size={18} /> Plan my trip</span>
       </SubmitButton>
     </form>

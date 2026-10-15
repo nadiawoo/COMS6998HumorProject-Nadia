@@ -18,6 +18,16 @@ export function HomeShell({ children }: { children: React.ReactNode }) {
     if (id && from === "map" && window.matchMedia("(min-width: 1024px)").matches)
       document.getElementById(`card-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
+  // Clicking anywhere in the page that isn't a route card (or the map, which handles its own clicks) clears the selection
+  useEffect(() => {
+    if (!selected) return;
+    const away = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (!el.closest("[data-route-card], .leaflet-container, [data-keep-selection]")) setSelected(null);
+    };
+    document.addEventListener("click", away);
+    return () => document.removeEventListener("click", away);
+  }, [selected]);
   return <Ctx.Provider value={{ selected, select }}>{children}</Ctx.Provider>;
 }
 
@@ -35,7 +45,7 @@ export function HomeMap({ routes, details, count }: { routes: MapRoute[]; detail
       {sel && (
         <button onClick={() => select(null)} className="absolute right-3 top-3 z-[500] border border-black bg-white px-3 py-2 text-sm font-bold">Show all routes</button>
       )}
-      <a href={sel ? `#card-${sel.id}` : "#routes"} className="absolute bottom-6 left-1/2 z-[500] flex max-w-[90%] -translate-x-1/2 items-center gap-2 bg-black px-4 py-2.5 text-sm font-bold text-white lg:hidden">
+      <a href={sel ? `#card-${sel.id}` : "#routes"} data-keep-selection className="absolute bottom-6 left-1/2 z-[500] flex max-w-[90%] -translate-x-1/2 items-center gap-2 bg-black px-4 py-2.5 text-sm font-bold text-white lg:hidden">
         {sel ? <><span className="h-3 w-3 shrink-0" style={{ background: sel.color }} /> <span className="truncate">{sel.title}</span></> : count ? `${count} routes` : "Routes"} <DownIcon size={16} />
       </a>
     </>
@@ -47,7 +57,7 @@ export function SelectableCard({ id, color, children }: { id: string; color?: st
   const { selected, select } = useContext(Ctx);
   const on = selected === id;
   return (
-    <div id={`card-${id}`} className="scroll-mt-24 transition-shadow"
+    <div id={`card-${id}`} data-route-card className="scroll-mt-24 transition-shadow"
       style={on && color ? { boxShadow: `0 0 0 3px ${color}` } : undefined}
       onClick={(e) => { if (!(e.target as HTMLElement).closest("a,button,form,summary,input") && color) select(on ? null : id, "card"); }}>
       {children}

@@ -10,7 +10,8 @@ export const MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
 // Finding coordinates is easy — use the smaller, faster model for it
 export const FAST_MODEL = process.env.GEMINI_FAST_MODEL ?? "gemini-flash-lite-latest";
 
-// Speed: "thinking" is what made planning take a minute+. Keep it minimal, and give up after 40 s.
+// Speed: "thinking" is what made planning take a minute+, so keep it low. The free tier can still be slow,
+// so wait up to 60 s for small lookups and 2.5 min for writing the trip before giving up.
 export async function ask<T>(prompt: string, schema: object, opts: { temperature?: number; fast?: boolean } = {}): Promise<T> {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set");
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -21,7 +22,8 @@ export async function ask<T>(prompt: string, schema: object, opts: { temperature
       ...(thinking ? { thinkingConfig: { thinkingLevel: opts.fast ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW } } : {}),
     },
   });
-  const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("the AI took too long")), 40000));
+  const limit = opts.fast ? 60000 : 150000;
+  const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`no answer from the AI after ${limit / 1000} s`)), limit));
   const t0 = Date.now();
   let res;
   try { res = await Promise.race([call(true), timeout]); }

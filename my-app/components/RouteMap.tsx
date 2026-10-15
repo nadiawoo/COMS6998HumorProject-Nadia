@@ -23,11 +23,17 @@ function FitTo({ points }: { points: [number, number][] }) {
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
+// Clicking empty map (anything that isn't a route) clears the selection.
+// Route lines set bubblingMouseEvents: false so their own clicks don't reach the map.
+function ClickAway({ onClear }: { onClear: () => void }) {
+  useMapEvents({ click: onClear });
+  return null;
+}
 // Trek labels only stay on screen once you've zoomed in far enough to read them
 function useZoom() {
-  const [zoom, setZoom] = useState(12);
-  const map = useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
-  useEffect(() => setZoom(map.getZoom()), [map]);
+  const map = useMap();
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
   return zoom;
 }
 function Treks({ route }: { route: MapRoute }) {
@@ -36,9 +42,9 @@ function Treks({ route }: { route: MapRoute }) {
     <>
       {(route.treks ?? []).map((t, i) => (
         <Fragment key={`t${i}`}>
-          <Polyline positions={t.path} pathOptions={{ color: "#000", weight: 2, dashArray: "2 6" }} />
+          <Polyline positions={t.path} pathOptions={{ color: "#000", weight: 2, dashArray: "2 6", bubblingMouseEvents: false }} />
           {t.spots.map((g, k) => (
-            <CircleMarker key={`${k}-${zoom >= 15}`} center={[g.lat, g.lon]} radius={5} pathOptions={{ color: "#000", weight: 2, fillColor: "#fff", fillOpacity: 1 }}>
+            <CircleMarker key={`${k}-${zoom >= 15}`} center={[g.lat, g.lon]} radius={5} pathOptions={{ color: "#000", weight: 2, fillColor: "#fff", fillOpacity: 1, bubblingMouseEvents: false }}>
               <Tooltip direction="right" offset={[6, 0]} permanent={zoom >= 15}>{g.label}</Tooltip>
             </CircleMarker>
           ))}
@@ -82,6 +88,7 @@ export default function RouteMap({ routes, details, selected, onSelect, height =
           <Tooltip>116 St – Columbia</Tooltip>
         </CircleMarker>
         {onSelect && <FitTo points={selPoints.length ? selPoints : all} />}
+        {onSelect && sel && <ClickAway onClear={() => onSelect(null)} />}
 
         {/* Background routes: everything except the selected one */}
         {routes.filter((r) => r.id !== sel?.id).map((r, i) => {
@@ -93,9 +100,9 @@ export default function RouteMap({ routes, details, selected, onSelect, height =
               {r.legs.map((l, k) => (
                 <Fragment key={k}>
                   {/* white casing so colored lines read on the gray map */}
-                  {!l.dashed && <Polyline positions={l.path} pathOptions={{ color: "#fff", weight: active ? 10 : 7, opacity: dim ? 0.15 : 0.9 }} />}
+                  {!l.dashed && <Polyline positions={l.path} eventHandlers={events} pathOptions={{ color: "#fff", weight: active ? 10 : 7, opacity: dim ? 0.15 : 0.9, bubblingMouseEvents: false }} />}
                   <Polyline positions={l.path} eventHandlers={events}
-                    pathOptions={{ color: l.color, weight: l.dashed ? 3 : active ? 6 : 4, dashArray: l.dashed ? "4 8" : undefined, opacity: dim ? 0.18 : 1 }}>
+                    pathOptions={{ color: l.color, weight: l.dashed ? 3 : active ? 6 : 4, dashArray: l.dashed ? "4 8" : undefined, opacity: dim ? 0.18 : 1, bubblingMouseEvents: false }}>
                     {!single && <Tooltip sticky>{r.title}</Tooltip>}
                   </Polyline>
                 </Fragment>
@@ -116,8 +123,8 @@ export default function RouteMap({ routes, details, selected, onSelect, height =
           <>
             {sel.legs.map((l, k) => (
               <Fragment key={`s${k}`}>
-                {!l.dashed && <Polyline positions={l.path} pathOptions={{ color: "#fff", weight: 11 }} />}
-                <Polyline positions={l.path} pathOptions={{ color: l.color, weight: l.dashed ? 3 : 6, dashArray: l.dashed ? "4 8" : undefined }} />
+                {!l.dashed && <Polyline positions={l.path} pathOptions={{ color: "#fff", weight: 11, bubblingMouseEvents: false }} />}
+                <Polyline positions={l.path} pathOptions={{ color: l.color, weight: l.dashed ? 3 : 6, dashArray: l.dashed ? "4 8" : undefined, bubblingMouseEvents: false }} />
               </Fragment>
             ))}
             <Treks route={sel} />

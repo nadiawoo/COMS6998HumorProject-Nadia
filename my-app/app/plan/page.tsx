@@ -7,7 +7,7 @@ import { toNyInput } from "@/lib/time";
 import { PlanForm } from "@/components/PlanForm";
 import { daysText, EVENTS } from "@/lib/events";
 
-export const maxDuration = 60; // planning calls Gemini — give the server action time on Vercel
+export const maxDuration = 300; // planning calls Gemini, which can take a minute or two — give it time on Vercel
 
 // Logged-in only (proxy.ts)
 export default async function Plan({ searchParams }: PageProps<"/plan">) {
