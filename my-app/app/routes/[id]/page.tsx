@@ -3,6 +3,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase";
 import { mapDetail, viewerPrefs, withScores, type RouteRow } from "@/lib/routes";
 import { departures, serviceAlerts } from "@/lib/live";
+import { logActivity } from "@/lib/activity";
 import { fitFor, type RideLeg } from "@/lib/transit";
 import { buildTimeline, depKey, fmtDay, fmtTime, parseNy, serviceDay, sunTimes, timeWarnings, toNyInput, type Departures } from "@/lib/time";
 import { VibeCard } from "@/components/VibeCard";
@@ -25,6 +26,7 @@ export default async function RoutePage({ params, searchParams }: PageProps<"/ro
   const [item] = await withScores(supabase, [data as RouteRow], user?.id);
   if (!item) notFound(); // older test routes from the first version
   const prefs = await viewerPrefs(supabase, user?.id);
+  await logActivity(supabase, { kind: "view", route_id: id }); // for the admin "most viewed" stats
   const s = item.facts.summary;
   const issues = prefs ? fitFor(item.facts.segments, prefs) : [];
 

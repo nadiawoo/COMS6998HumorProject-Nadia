@@ -8,6 +8,7 @@ import { CAMPUS, DEFAULT_PREFS, distanceKm, DESTINATIONS, HARD_TRANSFERS, tripFa
 import { fmtDay, fmtTime, nyHour, parseNy, serviceDay, sunTimes, toNyInput } from "@/lib/time";
 import { daysText, EVENTS, eventsNear, eventsOn } from "@/lib/events";
 import { BUDGETS, MOODS } from "@/lib/themes";
+import { logActivity } from "@/lib/activity";
 import { routeOptions } from "@/lib/router";
 import { assemble, buildWritePrompt, locatePlaces, MODEL, parseRidingNotes, writeTrip, type TripCard } from "@/lib/generate";
 
@@ -189,6 +190,9 @@ export async function generateRoute(formData: FormData) {
   const times = formData.getAll("stop_time").map(String);
   const stops = texts.map((t, i) => ({ input: t, kind: (kinds[i] === "must" ? "must" : "explore") as StopKind, time: times[i] || undefined })).filter((x) => x.input).slice(0, 3);
   const mode = modeOf(formData.get("when"));
+  // What people ask for (even when planning fails) — for the admin "most requested destinations" stats
+  const supabase = await createClient();
+  await Promise.all(stops.map((s) => logActivity(supabase, { kind: "plan", term: s.input })));
   const out = await planTrip({ start: String(formData.get("start") ?? "").trim().slice(0, 80), stops, mode, leave: String(formData.get("leave") ?? ""), budget: budgetOf(formData.get("time")) });
   if ("error" in out) redirect(`/plan?to=${encodeURIComponent(stops[0]?.input ?? "")}&error=${encodeURIComponent(out.error)}`);
   redirect(`/routes/${out.id}${leaveQuery(mode)}`);

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase";
 import { mapDetail, mapSummary, rankedRoutes, ROUTE_COLORS, viewerPrefs, withScores, type RouteRow } from "@/lib/routes";
 import { themeOf } from "@/lib/themes";
+import { logActivity } from "@/lib/activity";
 import { HomeMap, HomeShell, SelectableCard } from "@/components/HomeShell";
 import { fmtDay, fmtTime, isDark, nyWeekday, parseNy, serviceDay, sunTimes, toNyInput } from "@/lib/time";
 import { eventsOn } from "@/lib/events";
@@ -19,6 +20,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   const q = user ? String(sp.q ?? "").trim() : ""; // searching requires login
+  if (q) await logActivity(supabase, { kind: "search", term: q }); // for the admin "top searches" stats
   const fitsOnly = !!user && sp.fits === "1";
   let tab = String(sp.tab ?? "trending") as keyof typeof TABS;
   if (!TABS[tab] || (tab === "new" && !user)) tab = "trending";

@@ -4,6 +4,7 @@ import { viewerPrefs, withScores, type RouteRow } from "@/lib/routes";
 import { MOODS, themeOf } from "@/lib/themes";
 import { isDark, serviceDay, toNyInput } from "@/lib/time";
 import { luckyNew } from "../actions";
+import { logActivity } from "@/lib/activity";
 import { RouteCard } from "@/components/RouteCard";
 import { SubmitButton } from "@/components/SubmitButton";
 import { ArrowIcon } from "@/components/Icons";
@@ -23,6 +24,7 @@ export default async function Lucky({ searchParams }: PageProps<"/lucky">) {
   // Draw: trips of this mood's theme (for "now": planned for today's kind of service), better-rated ones more likely
   let drawn = null, pool = 0;
   if (mood) {
+    await logActivity(supabase, { kind: "lucky", term: mood.label }); // for the admin "moods drawn" stats
     const { data } = await supabase.from("routes").select("*").order("created_at", { ascending: false }).limit(300);
     let items = (await withScores(supabase, (data ?? []) as RouteRow[], user?.id)).filter((i) => themeOf(i) === mood.theme);
     if (now) items = items.filter((i) => i.facts.when === serviceDay(new Date()));
