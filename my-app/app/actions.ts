@@ -11,6 +11,7 @@ import { BUDGETS, MOODS } from "@/lib/themes";
 import { logActivity } from "@/lib/activity";
 import { routeOptions } from "@/lib/router";
 import { assemble, buildWritePrompt, locatePlaces, MODEL, parseRidingNotes, writeTrip, type TripCard } from "@/lib/generate";
+import { pickChain, promptExtras, RequestLog } from "@/lib/pipeline";
 
 const DAILY_LIMIT = 10; // routes per user per 24h (protects the free Gemini quota)
 
@@ -66,10 +67,15 @@ export async function updateProfile(formData: FormData) {
   if (notes !== (before?.ride_notes ?? "")) {
     updates.ride_notes = notes;
     if (notes) {
+      const chain = await pickChain(supabase, "profile");
+      const req = await new RequestLog(supabase, "profile", chain, { notes }).start(user.id);
       try {
-        const t = await parseRidingNotes(notes, HARD_TRANSFERS);
+        const t = await parseRidingNotes(notes, HARD_TRANSFERS, chain.steps.parse, req.record);
         Object.assign(updates, { max_walk_minutes: t.max_walk_minutes, transfer_style: t.transfer_style, avoid_transfers: t.avoid_transfers, traits: { likes: t.likes, summary: t.summary } });
-      } catch { /* keep the manual settings if the AI is unavailable */ }
+        await req.finish({});
+      } catch (e) {
+        await req.finish({ error: e instanceof Error ? e.message : "AI error" }); // keep the manual settings if the AI is unavailable
+      }
     } else updates.traits = {};
   }
 
@@ -86,20 +92,27 @@ type Wanted = { input: string; kind: StopKind; time?: string; point?: Point };
 type PlanInput = { start: string; stops: Wanted[]; mode: "now" | "pick" | "anytime"; leave?: string; budget: number };
 
 // Shared by "Plan a trip" and "Feeling lucky". Returns the new route id, or an error to show.
-async function planTrip(input: PlanInput): Promise<{ id: string } | { error: string }> {
+async function planTrip(input: PlanInput, kind: "trip" | "lucky" = "trip"): Promise<{ id: string } | { error: string }> {
   const { supabase, user } = await requireUser();
+  // Which prompt chain writes this trip: a weighted draw from the prompt-chain mix (admin area)
+  const chain = await pickChain(supabase, "trip");
+  const req = await new RequestLog(supabase, kind, chain, {
+    chain: chain.slug, mode: input.mode, leave: input.leave || null, budget_minutes: input.budget,
+    start: input.start || null, stops: input.stops.map((s) => ({ input: s.input, kind: s.kind, time: s.time ?? null })),
+  }).start(user.id);
+  const done = async (out: { id: string } | { error: string }) => { await req.finish("error" in out ? { error: out.error } : { route_id: out.id }); return out; };
   const t0 = Date.now();
   const log = (step: string) => console.log(`[plan] ${step} at ${Date.now() - t0} ms`);
   // When: "now" = live plan for right now; "pick" = a chosen time; "anytime" = reusable template (weekend daytime service)
   const chosen = input.mode === "now" ? new Date() : input.mode === "pick" ? parseNy(input.leave ?? "") : null;
-  if (input.mode === "pick" && !chosen) return { error: "Pick a day and time, or choose Now / Anytime." };
+  if (input.mode === "pick" && !chosen) return done({ error: "Pick a day and time, or choose Now / Anytime." });
   const leaveAt = chosen ?? new Date();
   const when: When = chosen ? serviceDay(chosen) : "weekend";
-  if (input.stops.length === 0) return { error: "Add at least one stop." };
+  if (input.stops.length === 0) return done({ error: "Add at least one stop." });
 
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const { count } = await supabase.from("routes").select("id", { count: "exact", head: true }).eq("created_by", user.id).gte("created_at", since);
-  if ((count ?? 0) >= DAILY_LIMIT) return { error: `You've planned ${DAILY_LIMIT} trips today — come back tomorrow!` };
+  if ((count ?? 0) >= DAILY_LIMIT) return done({ error: `You've planned ${DAILY_LIMIT} trips today — come back tomorrow!` });
 
   const { data: profile } = await supabase.from("profiles").select("max_walk_minutes, transfer_style, avoid_transfers, traits").eq("id", user.id).maybeSingle();
   const { traits, ...prefFields } = profile ?? {};
@@ -114,8 +127,8 @@ async function planTrip(input: PlanInput): Promise<{ id: string } | { error: str
   let locatePrompt = "";
   let located: { name: string; lat: number; lon: number; found: boolean }[] = [];
   if (unknown.length) {
-    try { ({ prompt: locatePrompt, places: located } = await locatePlaces(unknown)); }
-    catch (e) { return { error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }; }
+    try { ({ prompt: locatePrompt, places: located } = await locatePlaces(unknown, chain.steps.locate, req.record)); }
+    catch (e) { return done({ error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }); }
     log("located places");
   }
   const stops: TripStop[] = [];
@@ -123,7 +136,7 @@ async function planTrip(input: PlanInput): Promise<{ id: string } | { error: str
     const k = known(x);
     const p = k ?? located[unknown.indexOf(x.input)];
     const inNyc = p && p.lat > 40.49 && p.lat < 40.92 && p.lon > -74.27 && p.lon < -73.68;
-    if (!p || !inNyc || ("found" in p && !p.found)) return { error: `Couldn't find "${x.input}" in NYC — try a more specific name.` };
+    if (!p || !inNyc || ("found" in p && !p.found)) return done({ error: `Couldn't find "${x.input}" in NYC — try a more specific name.` });
     stops.push({ name: k ? k.name : p.name || x.input, lat: p.lat, lon: p.lon, kind: x.kind, time: x.time, input: x.input || k?.name || "" });
   }
 
@@ -136,11 +149,13 @@ async function planTrip(input: PlanInput): Promise<{ id: string } | { error: str
     return opts;
   });
   const missing = options.findIndex((o) => o.length === 0);
-  if (missing >= 0) return { error: `No route to ${stops[missing + 1].name} fits your walking/transfer preferences. Try loosening them in Profile.` };
+  if (missing >= 0) return done({ error: `No route to ${stops[missing + 1].name} fits your walking/transfer preferences. Try loosening them in Profile.` });
   log("routes computed");
 
   // 3) Gemini picks options and writes views, places (with a walking loop) and the poster
+  const extras = await promptExtras(supabase, chain.id);
   const writePrompt = buildWritePrompt({
+    voice: chain.steps.write?.instructions, glossary: extras.glossary, examples: extras.examples,
     stops, options, timeBudget: input.budget, when, prefs, likes,
     leaving: chosen ? `${fmtDay(chosen)}, ${fmtTime(chosen)}${input.mode === "now" ? " (leaving right now)" : ""}` : "flexible — no set day or time (suggest the best time to go in best_time; frequencies shown are for weekend early afternoon)",
     sunset: chosen ? fmtTime(sunTimes(chosen).sunset) : `around ${fmtTime(sunTimes(new Date()).sunset)} this time of year`,
@@ -149,8 +164,8 @@ async function planTrip(input: PlanInput): Promise<{ id: string } | { error: str
       : EVENTS.filter((e) => stops.slice(1).some((st) => distanceKm(st, e) < 1.5)).map((e) => `${e.name} (${daysText(e)}, ${e.hours}) — ${e.note}`),
   });
   let card: TripCard;
-  try { card = await writeTrip(writePrompt); }
-  catch (e) { return { error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }; }
+  try { card = await writeTrip(writePrompt, chain.steps.write, req.record); }
+  catch (e) { return done({ error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }); }
   log("trip written");
   const segments = assemble(options, card);
 
@@ -168,16 +183,16 @@ async function planTrip(input: PlanInput): Promise<{ id: string } | { error: str
   const { data: row, error } = await supabase.from("routes").insert({
     destination: stops.slice(1).map((s) => s.name).join(" → "),
     vibe: card.theme ?? "Neighborhood wander", // the AI's theme (the column predates themes)
-    prompt: [locatePrompt, writePrompt].filter(Boolean).join("\n\n---\n\n"),
-    model: MODEL,
+    prompt: [`Prompt chain: ${chain.name}`, locatePrompt, writePrompt].filter(Boolean).join("\n\n---\n\n"),
+    model: chain.steps.write?.model ?? MODEL,
     card,
     facts: { version: 2, when, stops, segments, summary: tripFacts(segments), planned_leave: input.mode === "pick" ? chosen?.toISOString() : undefined },
     prefs_used: prefs,
   }).select("id").single();
-  if (error) return { error: `Saving failed: ${error.message}` };
+  if (error) return done({ error: `Saving failed: ${error.message}` });
   log("saved");
   revalidatePath("/", "layout");
-  return { id: row.id };
+  return done({ id: row.id });
 }
 
 const budgetOf = (v: FormDataEntryValue | null) => BUDGETS.find((b) => b.id === v)?.minutes ?? 270;
@@ -206,7 +221,7 @@ export async function luckyNew(formData: FormData) {
   const extra = mood.id === "seasonal" ? (mode === "now" ? eventsOn(new Date()) : EVENTS) : [];
   const pool = [...mood.places, ...extra.map((e) => ({ name: e.name, lat: e.lat, lon: e.lon }))];
   const place = pool[Math.floor(Math.random() * pool.length)];
-  const out = await planTrip({ start: "", stops: [{ input: place.name, kind: "explore", point: place }], mode, budget: 240 });
+  const out = await planTrip({ start: "", stops: [{ input: place.name, kind: "explore", point: place }], mode, budget: 240 }, "lucky");
   if ("error" in out) redirect(`/lucky?mood=${mood.id}&when=${mode}&error=${encodeURIComponent(out.error)}`);
   redirect(`/routes/${out.id}${leaveQuery(mode)}`);
 }

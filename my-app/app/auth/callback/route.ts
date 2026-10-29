@@ -11,6 +11,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}/login?error=1`);
   }
 
+  // Signup rules from the admin area (allowed domains + whitelisted emails). If the check isn't
+  // installed yet (no week6.sql), everyone is let in, as before.
+  const { data: allowed, error: ruleError } = await supabase.rpc("signup_allowed");
+  if (!ruleError && allowed === false) {
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=not_allowed`);
+  }
+
   // Missing first or last name? Send them to fill it in first.
   const { data: { user } } = await supabase.auth.getUser();
   const { data: profile } = await supabase

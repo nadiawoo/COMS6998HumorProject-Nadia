@@ -10,36 +10,52 @@ export const MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
 // Finding coordinates is easy — use the smaller, faster model for it
 export const FAST_MODEL = process.env.GEMINI_FAST_MODEL ?? "gemini-flash-lite-latest";
 
+// One AI call. Which model, temperature and "thinking" level to use come from the prompt-chain step
+// in the database (lib/pipeline.ts); without one, the defaults above are used.
 // Speed: "thinking" is what made planning take a minute+, so keep it low. The free tier can still be slow,
 // so wait up to 60 s for small lookups and 2.5 min for writing the trip before giving up.
-export async function ask<T>(prompt: string, schema: object, opts: { temperature?: number; fast?: boolean } = {}): Promise<T> {
+export type StepSettings = { id?: number | null; role?: string; model?: string; temperature?: number; thinking?: "none" | "minimal" | "low"; instructions?: string };
+export type CallLog = { step_id?: number | null; role?: string; model_key: string; temperature: number; prompt: string; response?: string; error?: string; duration_ms: number };
+export async function ask<T>(prompt: string, schema: object, opts: { temperature?: number; fast?: boolean; step?: StepSettings; log?: (c: CallLog) => void } = {}): Promise<T> {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set");
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const model = opts.step?.model ?? (opts.fast ? FAST_MODEL : MODEL);
+  const temperature = opts.step?.temperature ?? opts.temperature ?? 0.7;
+  const level = opts.step?.thinking ?? (opts.fast ? "minimal" : "low");
   const call = (thinking: boolean) => ai.models.generateContent({
-    model: opts.fast ? FAST_MODEL : MODEL, contents: prompt,
+    model, contents: prompt,
     config: {
-      responseMimeType: "application/json", responseJsonSchema: schema, temperature: opts.temperature ?? 0.7,
-      ...(thinking ? { thinkingConfig: { thinkingLevel: opts.fast ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW } } : {}),
+      responseMimeType: "application/json", responseJsonSchema: schema, temperature,
+      ...(thinking && level !== "none" ? { thinkingConfig: { thinkingLevel: level === "minimal" ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW } } : {}),
     },
   });
-  const limit = opts.fast ? 60000 : 150000;
+  const limit = level === "minimal" || opts.fast ? 60000 : 150000;
   const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`no answer from the AI after ${limit / 1000} s`)), limit));
   const t0 = Date.now();
+  const entry = { step_id: opts.step?.id ?? null, role: opts.step?.role, model_key: model, temperature, prompt };
   let res;
-  try { res = await Promise.race([call(true), timeout]); }
-  catch (e) {
-    // older models don't accept thinkingLevel — retry once without it
-    if (e instanceof Error && /thinking/i.test(e.message)) res = await Promise.race([call(false), timeout]);
-    else throw e;
+  try {
+    try { res = await Promise.race([call(true), timeout]); }
+    catch (e) {
+      // older models don't accept thinkingLevel — retry once without it
+      if (e instanceof Error && /thinking/i.test(e.message)) res = await Promise.race([call(false), timeout]);
+      else throw e;
+    }
+  } catch (e) {
+    opts.log?.({ ...entry, error: e instanceof Error ? e.message : String(e), duration_ms: Date.now() - t0 });
+    throw e;
   }
-  console.log(`[gemini] ${opts.fast ? FAST_MODEL : MODEL} ${Date.now() - t0} ms`);
+  console.log(`[gemini] ${model} ${Date.now() - t0} ms`);
+  opts.log?.({ ...entry, response: res.text ?? "", duration_ms: Date.now() - t0 });
   return JSON.parse(res.text ?? "{}") as T;
 }
 
+const LOCATE_DEFAULT = 'For each place in New York City below, give its latitude and longitude and a short clean name. If a place is vague (e.g. "Midtown"), use its most typical central point. If it is not in NYC, set found=false.';
+export const VOICE_DEFAULT = 'You are the voice of "Journey", a guide for a Columbia student who is new to NYC and explores on {when}s.';
+
 // ---------- Step 1: typed places -> coordinates ----------
-export async function locatePlaces(names: string[]) {
-  const prompt = `For each place in New York City below, give its latitude and longitude and a short clean name.
-If a place is vague (e.g. "Midtown"), use its most typical central point. If it is not in NYC, set found=false.
+export async function locatePlaces(names: string[], step?: StepSettings, log?: (c: CallLog) => void) {
+  const prompt = `${step?.instructions || LOCATE_DEFAULT}
 Places:\n${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}`;
   const schema = {
     type: "object",
@@ -48,7 +64,7 @@ Places:\n${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}`;
     }, required: ["name", "lat", "lon", "found"] } } },
     required: ["places"],
   };
-  const out = await ask<{ places: { name: string; lat: number; lon: number; found: boolean }[] }>(prompt, schema, { temperature: 0, fast: true });
+  const out = await ask<{ places: { name: string; lat: number; lon: number; found: boolean }[] }>(prompt, schema, { temperature: 0, fast: true, step, log });
   return { prompt, places: out.places ?? [] };
 }
 
@@ -79,10 +95,13 @@ function describeOption(seg: Segment, s: number, o: number) {
   return `  Option ${o} (${seg.variant.replace("_", " ")}, ~${seg.minutes} min${t ? `, transfers: ${t}` : ", no in-station transfers"}):\n${lines.join("\n")}`;
 }
 
-export function buildWritePrompt(input: { stops: TripStop[]; options: Segment[][]; timeBudget: number; when: string; prefs: Prefs; leaving: string; sunset: string; likes: string[]; events: string[] }) {
+export function buildWritePrompt(input: { stops: TripStop[]; options: Segment[][]; timeBudget: number; when: string; prefs: Prefs; leaving: string; sunset: string; likes: string[]; events: string[];
+  voice?: string; glossary?: string[]; examples?: string[] }) {
+  // The opening "voice" comes from the prompt chain in the database; glossary terms and examples too
+  const voice = (input.voice || VOICE_DEFAULT).replaceAll("{when}", input.when);
   const parts = input.options.map((opts, s) =>
     `PART ${s} — from ${input.stops[s].name} to ${input.stops[s + 1].name}${input.stops[s + 1].kind === "must" ? ` (MUST be there${input.stops[s + 1].time ? ` by ${input.stops[s + 1].time}` : ""})` : " (to explore)"}:\n${opts.map((seg, o) => describeOption(seg, s, o)).join("\n")}`);
-  return `You are the voice of "Journey", a guide for a Columbia student who is new to NYC and explores on ${input.when}s.
+  return `${voice}
 The subway routes below were computed from real MTA data and are all valid. Work out what each stop is for from what it is (a night market is about cheap food, a bridge or waterfront about views, a flea about browsing) — the rider does not tell you a goal.
 1. For each PART pick one option index (choices[]) — up to 5 options per part. Prefer the scenic option only when it costs at most ~15 extra minutes; for MUST stops pick the fastest reliable one.
 2. TIME: the rider has about ${input.timeBudget} minutes in total. Travel should be the smaller share — set each stop's "minutes" so that time at the places is at least as long as the trip there, and travel + stops roughly fill the time available. 0 minutes for a stop they only need to reach.
@@ -93,7 +112,7 @@ The subway routes below were computed from real MTA data and are all valid. Work
 7. theme: exactly one of: ${THEMES.join(" | ")}.
 8. vibe: an editorial poster — headline (2–5 words), subline (one sentence), words (3 single mood words).
 Plain text only, no emojis.
-
+${input.glossary?.length ? `\nNYC terms — use them correctly when they fit:\n${input.glossary.map((g) => `- ${g}`).join("\n")}\n` : ""}${input.examples?.length ? `\nExamples of the tone and level of detail we want (do not reuse their places):\n${input.examples.map((e) => `---\n${e}`).join("\n")}\n---\n` : ""}
 Rider: ${prefsInWords(input.prefs)}.
 Planned departure: ${input.leaving}. Sunset that day: ${input.sunset}.
 ${input.events.length ? `Happening near the stops (verified schedules — suggest them where they fit): ${input.events.join("; ")}.` : ""}
@@ -102,7 +121,7 @@ Each option lists how often its trains run at that hour. Prefer frequent service
 ${parts.join("\n\n")}`;
 }
 
-export async function writeTrip(prompt: string) {
+export async function writeTrip(prompt: string, step?: StepSettings, log?: (c: CallLog) => void) {
   const schema = {
     type: "object",
     properties: {
@@ -119,7 +138,7 @@ export async function writeTrip(prompt: string) {
     },
     required: ["title", "hook", "best_time", "choices", "views", "stops", "vibe", "theme"],
   };
-  const card = await ask<Omit<TripCard, "version">>(prompt, schema, { temperature: 0.8 });
+  const card = await ask<Omit<TripCard, "version">>(prompt, schema, { temperature: 0.8, step, log });
   return { ...card, version: 2 as const };
 }
 
@@ -142,10 +161,10 @@ export function assemble(options: Segment[][], card: TripCard): Segment[] {
 
 // ---------- Profile: free-text riding habits -> structured traits ----------
 export type Traits = { max_walk_minutes: number; transfer_style: "any" | "same_station" | "none"; avoid_transfers: string[]; likes: string[]; summary: string };
-export async function parseRidingNotes(notes: string, hardTransfers: { id: string; label: string }[]): Promise<Traits> {
-  const prompt = `A NYC subway rider described how they like to get around:
+export async function parseRidingNotes(notes: string, hardTransfers: { id: string; label: string }[], step?: StepSettings, log?: (c: CallLog) => void): Promise<Traits> {
+  const prompt = `${step?.instructions || "A NYC subway rider described how they like to get around. Turn it into settings."}
 """${notes}"""
-Turn this into settings:
+Settings:
 - max_walk_minutes (0–30): longest walk they accept to avoid an annoying transfer (default 15 if not mentioned)
 - transfer_style: "any", "same_station" (only easy transfers inside one station, e.g. cross-platform), or "none" (no in-station transfers; walking between stations is fine)
 - avoid_transfers: ids from this list that they dislike: ${hardTransfers.map((h) => `${h.id} = ${h.label}`).join("; ")}
@@ -155,7 +174,7 @@ Turn this into settings:
     max_walk_minutes: { type: "integer" }, transfer_style: { type: "string", enum: ["any", "same_station", "none"] },
     avoid_transfers: { type: "array", items: { type: "string" } }, likes: { type: "array", items: { type: "string" } }, summary: { type: "string" },
   }, required: ["max_walk_minutes", "transfer_style", "avoid_transfers", "likes", "summary"] };
-  const t = await ask<Traits>(prompt, schema, { temperature: 0, fast: true });
+  const t = await ask<Traits>(prompt, schema, { temperature: 0, fast: true, step, log });
   return {
     max_walk_minutes: Math.min(30, Math.max(0, Math.round(t.max_walk_minutes ?? 15))),
     transfer_style: ["any", "same_station", "none"].includes(t.transfer_style) ? t.transfer_style : "any",
