@@ -3,11 +3,12 @@ import { LineBullet } from "./LineBullet";
 import { StarIcon, WalkIcon } from "./Icons";
 import { hrs, outingMinutes, themeOf } from "@/lib/themes";
 import { Votes } from "./Votes";
+import { CardVotes } from "./CardVotes";
 import { fitFor, type Prefs } from "@/lib/transit";
 import type { FeedItem } from "@/lib/routes";
 
 // Compact template card for feeds (durations, no clock times). `color` matches the route's line on the map.
-export function RouteCard({ item, prefs, color, leave, compact = false }: { item: FeedItem; prefs: Prefs | null; color?: string; leave?: string; compact?: boolean }) {
+export function RouteCard({ item, prefs, color, leave, compact = false, signedIn = true }: { item: FeedItem; prefs: Prefs | null; color?: string; leave?: string; compact?: boolean; signedIn?: boolean }) {
   const { card, facts } = item;
   const s = facts.summary;
   const issues = prefs ? fitFor(facts.segments, prefs) : [];
@@ -42,7 +43,7 @@ export function RouteCard({ item, prefs, color, leave, compact = false }: { item
           {[s.aboveGround ? `${s.aboveGround} stop${s.aboveGround > 1 ? "s" : ""} above ground` : s.bridges.length ? "" : "Underground", ...s.bridges, s.transfers ? `${s.transfers} transfer${s.transfers > 1 ? "s" : ""}` : "No transfers"].filter(Boolean).join("  ·  ")}
         </p>}
         {prefs && <p className="text-sm font-medium">{issues.length ? `Not your style: ${issues.join(", ")}` : "Fits how you ride"}</p>}
-        {!compact && <Votes item={item} />}
+        {compact ? <CardVotes id={item.id} scores={item.scores} myVotes={item.myVotes} signedIn={signedIn} /> : <Votes item={item} />}
       </div>
     </article>
   );

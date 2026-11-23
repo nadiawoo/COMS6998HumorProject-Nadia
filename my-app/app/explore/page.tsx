@@ -41,7 +41,7 @@ export default async function Explore() {
             {g.note && <span className="text-sm text-neutral-400">{g.note}</span>}
           </div>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {g.items.map((item) => <RouteCard key={item.id} item={item} prefs={prefs} compact />)}
+            {g.items.map((item) => <RouteCard key={item.id} item={item} prefs={prefs} compact signedIn={!!user} />)}
           </div>
         </section>
       ))}
