@@ -10,7 +10,7 @@ import { daysText, EVENTS, eventsNear, eventsOn } from "@/lib/events";
 import { BUDGETS, MOODS } from "@/lib/themes";
 import { logActivity } from "@/lib/activity";
 import { routeOptions } from "@/lib/router";
-import { assemble, buildWritePrompt, locatePlaces, MODEL, parseRidingNotes, writeTrip, type TripCard } from "@/lib/generate";
+import { assemble, buildWritePrompt, friendlyAiError, locatePlaces, MODEL, parseRidingNotes, writeTrip, type TripCard } from "@/lib/generate";
 import { pickChain, promptExtras, RequestLog } from "@/lib/pipeline";
 
 const DAILY_LIMIT = 10; // routes per user per 24h (protects the free Gemini quota)
@@ -128,7 +128,7 @@ async function planTrip(input: PlanInput, kind: "trip" | "lucky" = "trip"): Prom
   let located: { name: string; lat: number; lon: number; found: boolean }[] = [];
   if (unknown.length) {
     try { ({ prompt: locatePrompt, places: located } = await locatePlaces(unknown, chain.steps.locate, req.record)); }
-    catch (e) { return done({ error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }); }
+    catch (e) { return done({ error: friendlyAiError(e) }); }
     log("located places");
   }
   const stops: TripStop[] = [];
@@ -165,7 +165,7 @@ async function planTrip(input: PlanInput, kind: "trip" | "lucky" = "trip"): Prom
   });
   let card: TripCard;
   try { card = await writeTrip(writePrompt, chain.steps.write, req.record); }
-  catch (e) { return done({ error: `The AI didn't answer (${e instanceof Error ? e.message : "error"}). Try again.` }); }
+  catch (e) { return done({ error: friendlyAiError(e) }); }
   log("trip written");
   const segments = assemble(options, card);
 

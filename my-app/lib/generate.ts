@@ -16,38 +16,80 @@ export const FAST_MODEL = process.env.GEMINI_FAST_MODEL ?? "gemini-flash-lite-la
 // so wait up to 60 s for small lookups and 2.5 min for writing the trip before giving up.
 export type StepSettings = { id?: number | null; role?: string; model?: string; temperature?: number; thinking?: "none" | "minimal" | "low"; instructions?: string };
 export type CallLog = { step_id?: number | null; role?: string; model_key: string; temperature: number; prompt: string; response?: string; error?: string; duration_ms: number };
+// Gemini sometimes answers 503 "overloaded" or 429 "too many requests". Those are temporary and on
+// Google's side, so: retry the same model once after a short pause (not for 429 — that's a quota),
+// then try backup models, which have their own capacity and quota.
+// Backups: GEMINI_FALLBACK_MODELS (comma-separated) on Vercel, or by default the other Flash model.
+const TRANSIENT = /\b(503|500|429)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|try again later|rate limit|quota/i;
+const isQuota = (m: string) => /\b429\b|RESOURCE_EXHAUSTED|quota|rate limit/i.test(m);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function backups(primary: string) {
+  const list = (process.env.GEMINI_FALLBACK_MODELS ?? [MODEL, FAST_MODEL].join(",")).split(",").map((x) => x.trim()).filter(Boolean);
+  return [...new Set(list)].filter((m) => m !== primary);
+}
+// A short, plain message for the rider instead of Google's raw JSON
+export function friendlyAiError(e: unknown) {
+  const m = e instanceof Error ? e.message : String(e);
+  if (isQuota(m)) return "Journey hit Gemini's usage limit for the moment. Wait a minute and try again.";
+  if (TRANSIENT.test(m)) return "Gemini is overloaded right now (on Google's side). Wait a minute and try again.";
+  return m.length > 160 ? `${m.slice(0, 160)}…` : m;
+}
+
 export async function ask<T>(prompt: string, schema: object, opts: { temperature?: number; fast?: boolean; step?: StepSettings; log?: (c: CallLog) => void } = {}): Promise<T> {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set");
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const model = opts.step?.model ?? (opts.fast ? FAST_MODEL : MODEL);
+  const primary = opts.step?.model ?? (opts.fast ? FAST_MODEL : MODEL);
   const temperature = opts.step?.temperature ?? opts.temperature ?? 0.7;
   const level = opts.step?.thinking ?? (opts.fast ? "minimal" : "low");
-  const call = (thinking: boolean) => ai.models.generateContent({
-    model, contents: prompt,
-    config: {
-      responseMimeType: "application/json", responseJsonSchema: schema, temperature,
-      ...(thinking && level !== "none" ? { thinkingConfig: { thinkingLevel: level === "minimal" ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW } } : {}),
-    },
-  });
   const limit = level === "minimal" || opts.fast ? 60000 : 150000;
-  const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`no answer from the AI after ${limit / 1000} s`)), limit));
-  const t0 = Date.now();
-  const entry = { step_id: opts.step?.id ?? null, role: opts.step?.role, model_key: model, temperature, prompt };
-  let res;
-  try {
-    try { res = await Promise.race([call(true), timeout]); }
+  const deadline = Date.now() + limit;
+
+  // One call to one model. Models that reject the thinking setting get one retry without it.
+  const once = async (model: string, think: typeof level) => {
+    const call = (thinking: boolean) => ai.models.generateContent({
+      model, contents: prompt,
+      config: {
+        responseMimeType: "application/json", responseJsonSchema: schema, temperature,
+        ...(thinking && think !== "none" ? { thinkingConfig: { thinkingLevel: think === "minimal" ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW } } : {}),
+      },
+    });
+    const left = Math.max(5000, deadline - Date.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer from the AI after ${Math.round(limit / 1000)} s`)), left); });
+    try { return await Promise.race([call(true), timeout]); }
     catch (e) {
-      // older models don't accept thinkingLevel — retry once without it
-      if (e instanceof Error && /thinking/i.test(e.message)) res = await Promise.race([call(false), timeout]);
-      else throw e;
+      if (e instanceof Error && /thinking/i.test(e.message) && !TRANSIENT.test(e.message)) return await Promise.race([call(false), timeout]);
+      throw e;
+    } finally { clearTimeout(timer); }
+  };
+
+  // The plan: primary, primary again after a pause, then each backup (backups use light thinking)
+  const plan: { model: string; think: typeof level; wait: number }[] = [
+    { model: primary, think: level, wait: 0 },
+    { model: primary, think: level, wait: 1500 },
+    ...backups(primary).map((m) => ({ model: m, think: m === FAST_MODEL ? ("minimal" as const) : level, wait: 0 })),
+  ];
+  let lastError: unknown;
+  for (const [i, a] of plan.entries()) {
+    if (i === 1 && lastError instanceof Error && isQuota(lastError.message)) continue; // a quota error won't clear in 1.5 s
+    if (a.wait) await sleep(a.wait);
+    if (Date.now() > deadline - 3000) break;
+    const t0 = Date.now();
+    const entry = { step_id: opts.step?.id ?? null, role: opts.step?.role, model_key: a.model, temperature, prompt };
+    try {
+      const res = await once(a.model, a.think);
+      console.log(`[gemini] ${a.model} ${Date.now() - t0} ms${i ? ` (attempt ${i + 1})` : ""}`);
+      opts.log?.({ ...entry, response: res.text ?? "", duration_ms: Date.now() - t0 });
+      return JSON.parse(res.text ?? "{}") as T;
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`[gemini] ${a.model} failed: ${msg.slice(0, 120)}`);
+      opts.log?.({ ...entry, error: msg, duration_ms: Date.now() - t0 });
+      if (!TRANSIENT.test(msg)) break;   // a real error (bad request, bad key): retrying won't help
     }
-  } catch (e) {
-    opts.log?.({ ...entry, error: e instanceof Error ? e.message : String(e), duration_ms: Date.now() - t0 });
-    throw e;
   }
-  console.log(`[gemini] ${model} ${Date.now() - t0} ms`);
-  opts.log?.({ ...entry, response: res.text ?? "", duration_ms: Date.now() - t0 });
-  return JSON.parse(res.text ?? "{}") as T;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 const LOCATE_DEFAULT = 'For each place in New York City below, give its latitude and longitude and a short clean name. If a place is vague (e.g. "Midtown"), use its most typical central point. If it is not in NYC, set found=false.';
